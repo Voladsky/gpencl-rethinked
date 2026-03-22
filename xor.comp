@@ -1,0 +1,31 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0) buffer InputBuffer {
+    uint data[];
+} inputBuf;
+
+layout(binding = 1) buffer OutputBuffer {
+    uint data[];
+} outputBuf;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    
+    uint word = inputBuf.data[index];
+    
+    uint byte0 = (word >> 0) & 0xFF;   // Least significant byte (bits 0-7)
+    uint byte1 = (word >> 8) & 0xFF;   // Bits 8-15
+    uint byte2 = (word >> 16) & 0xFF;  // Bits 16-23
+    uint byte3 = (word >> 24) & 0xFF;  // Bits 24-31 (most significant byte)
+    
+    byte0 ^= 0xA;
+    byte1 ^= 0xA;
+    byte2 ^= 0xA;
+    byte3 ^= 0xA;
+    
+    uint result = (byte0 << 0) | (byte1 << 8) | (byte2 << 16) | (byte3 << 24);
+    
+    outputBuf.data[index] = result;
+}
