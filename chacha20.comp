@@ -1,0 +1,130 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0, std430) readonly buffer InputBuffer
+{
+    uint inWords[];
+} inputBuf;
+
+layout(binding = 1, std430) writeonly buffer OutputBuffer
+{
+    uint outWords[];
+} outputBuf;
+
+// 32-byte keys, packed as 8 uints per key
+layout(binding = 2, std430) readonly buffer KeyBuffer
+{
+    uint keys[];
+} keyBuf;
+
+// One job per dispatch
+layout(binding = 3, std430) readonly buffer JobBuffer
+{
+    uint inputWordOffset;
+    uint outputWordOffset;
+    uint byteSize;
+    uint wordCount;
+    uint keyIndex;
+    uint nonce0;
+    uint nonce1;
+    uint nonce2;
+    uint counter0;
+} job;
+
+uint rotl32(uint x, uint n)
+{
+    return (x << n) | (x >> (32u - n));
+}
+
+void quarterRound(inout uint a, inout uint b, inout uint c, inout uint d)
+{
+    a += b; d ^= a; d = rotl32(d, 16u);
+    c += d; b ^= c; b = rotl32(b, 12u);
+    a += b; d ^= a; d = rotl32(d, 8u);
+    c += d; b ^= c; b = rotl32(b, 7u);
+}
+
+void chacha20_block(
+    uint keyBase,
+    uint counter,
+    uint nonce0,
+    uint nonce1,
+    uint nonce2,
+    out uint outState[16])
+{
+    uint x[16];
+    uint orig[16];
+
+    x[0]  = 0x61707865u;
+    x[1]  = 0x3320646eu;
+    x[2]  = 0x79622d32u;
+    x[3]  = 0x6b206574u;
+
+    x[4]  = keyBuf.keys[keyBase + 0u];
+    x[5]  = keyBuf.keys[keyBase + 1u];
+    x[6]  = keyBuf.keys[keyBase + 2u];
+    x[7]  = keyBuf.keys[keyBase + 3u];
+    x[8]  = keyBuf.keys[keyBase + 4u];
+    x[9]  = keyBuf.keys[keyBase + 5u];
+    x[10] = keyBuf.keys[keyBase + 6u];
+    x[11] = keyBuf.keys[keyBase + 7u];
+
+    // Counter + nonce (RFC 8439 layout)
+    x[12] = counter;
+    x[13] = nonce0;
+    x[14] = nonce1;
+    x[15] = nonce2;
+
+    for (int i = 0; i < 16; ++i)
+        orig[i] = x[i];
+
+    for (int i = 0; i < 10; ++i)
+    {
+        quarterRound(x[0], x[4], x[8],  x[12]);
+        quarterRound(x[1], x[5], x[9],  x[13]);
+        quarterRound(x[2], x[6], x[10], x[14]);
+        quarterRound(x[3], x[7], x[11], x[15]);
+
+        quarterRound(x[0], x[5], x[10], x[15]);
+        quarterRound(x[1], x[6], x[11], x[12]);
+        quarterRound(x[2], x[7], x[8],  x[13]);
+        quarterRound(x[3], x[4], x[9],  x[14]);
+    }
+
+    for (int i = 0; i < 16; ++i)
+        outState[i] = x[i] + orig[i];
+}
+
+void main()
+{
+    uint blockIdx = gl_GlobalInvocationID.x;
+    uint blockCount = (job.byteSize + 63u) / 64u;
+    if (blockIdx >= blockCount)
+        return;
+
+    uint keyBase = job.keyIndex * 8u;
+    uint blockCounter = job.counter0 + blockIdx;
+
+    uint keystream[16];
+    chacha20_block(
+        keyBase,
+        blockCounter,
+        job.nonce0,
+        job.nonce1,
+        job.nonce2,
+        keystream
+    );
+
+    uint inBase  = job.inputWordOffset  + blockIdx * 16u;
+    uint outBase = job.outputWordOffset + blockIdx * 16u;
+    
+    for (uint i = 0u; i < 16u; ++i)
+    {
+        uint wordIndex = blockIdx * 16u + i;
+        if (wordIndex >= job.wordCount)
+            break;
+
+        outputBuf.outWords[outBase + i] = inputBuf.inWords[inBase + i] ^ keystream[i];
+    }
+}
