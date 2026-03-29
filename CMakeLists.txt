@@ -16,10 +16,20 @@ if(DEFINED ENV{VULKAN_SDK})
 
     # shaderc include directory
     set(SHADERC_INCLUDE_DIR ${VULKAN_SDK_PATH}/include)
-    # shaderc library (static combined library)
+    
+    # Determine correct library name depending on OS
+    if(WIN32)
+        set(SHADERC_LIB_NAMES shaderc_combined shaderc)
+    else()
+        set(SHADERC_LIB_NAMES shaderc_combined shaderc libshaderc)
+    endif()
+    
     find_library(SHADERC_LIB
-        NAMES shaderc_combined
-        PATHS ${VULKAN_SDK_PATH}/Lib
+        NAMES ${SHADERC_LIB_NAMES}
+        PATHS 
+            ${VULKAN_SDK_PATH}/lib
+            ${VULKAN_SDK_PATH}/lib/x86_64-linux-gnu
+            ${VULKAN_SDK_PATH}/Lib
         NO_DEFAULT_PATH
     )
 else()
@@ -27,7 +37,7 @@ else()
 endif()
 
 if(NOT SHADERC_LIB)
-    message(FATAL_ERROR "Could not find shaderc_combined.lib. Ensure Vulkan SDK is installed and the library exists.")
+    message(FATAL_ERROR "Could not find shaderc library. Ensure Vulkan SDK is installed and the library exists.")
 endif()
 
 message(STATUS "shaderc include: ${SHADERC_INCLUDE_DIR}")
@@ -49,5 +59,12 @@ target_link_libraries(vulkan_xor
     ${SHADERC_LIB}
 )
 
+# Linux-specific libraries
+if(UNIX AND NOT APPLE)
+    target_link_libraries(vulkan_xor pthread dl)
+endif()
+
 # Optional: for Windows, you may need to define VK_USE_PLATFORM_WIN32_KHR
-target_compile_definitions(vulkan_xor PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+if(WIN32)
+    target_compile_definitions(vulkan_xor PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+endif()
