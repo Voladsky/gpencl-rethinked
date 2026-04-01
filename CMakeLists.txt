@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(VulkanXorExample)
+project(vk_chacha20poly1305)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,26 +45,26 @@ message(STATUS "shaderc library: ${SHADERC_LIB}")
 
 # -----------------------------------------------------------------------------
 # Add executable
-add_executable(vulkan_xor main.cpp)
+add_executable(vk_chacha20poly1305 main.cpp)
 
 # Include directories
-target_include_directories(vulkan_xor PRIVATE
+target_include_directories(vk_chacha20poly1305 PRIVATE
     ${Vulkan_INCLUDE_DIRS}
     ${SHADERC_INCLUDE_DIR}
 )
 
 # Link libraries
-target_link_libraries(vulkan_xor
+target_link_libraries(vk_chacha20poly1305
     ${Vulkan_LIBRARIES}
     ${SHADERC_LIB}
 )
 
 # Linux-specific libraries
 if(UNIX AND NOT APPLE)
-    target_link_libraries(vulkan_xor pthread dl)
+    target_link_libraries(vk_chacha20poly1305 pthread dl)
 endif()
 
 # Optional: for Windows, you may need to define VK_USE_PLATFORM_WIN32_KHR
 if(WIN32)
-    target_compile_definitions(vulkan_xor PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+    target_compile_definitions(vk_chacha20poly1305 PRIVATE VK_USE_PLATFORM_WIN32_KHR)
 endif()

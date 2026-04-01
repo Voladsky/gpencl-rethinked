@@ -655,8 +655,8 @@ int main(int argc, char** argv)
 
         // 6. Compile shader and create pipelines
         {
-            const std::vector<uint32_t> chachaSpv = compileShaderFile("chacha20.comp");
-            const std::vector<uint32_t> polySpv   = compileShaderFile("poly1305.comp");
+            const std::vector<uint32_t> chachaSpv = compileShaderFile("shaders/chacha20.comp");
+            const std::vector<uint32_t> polySpv   = compileShaderFile("shaders/poly1305.comp");
 
             VkShaderModuleCreateInfo shaderInfo{};
             shaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
