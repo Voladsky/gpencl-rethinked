@@ -1,0 +1,301 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : require
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 1, std430) readonly buffer CipherBuffer
+{
+    uint cipherWords[];
+} cipherBuf;
+
+// Buffer for additional authentication data
+layout(binding = 4, std430) readonly buffer AadBuffer
+{
+    uint aadWords[];
+} aadBuf;
+
+layout(binding = 5, std430) writeonly buffer TagBuffer
+{
+    uint tagWords[4];
+} tagBuf;
+
+// ChaCha20 key, using the same one as for encryption
+layout(binding = 2, std430) readonly buffer KeyBuffer
+{
+    uint keys[];
+} keyBuf;
+
+// Shared job buffer
+layout(binding = 3, std430) readonly buffer JobBuffer
+{
+    uint inputWordOffset;
+    uint outputWordOffset;
+    uint byteSize;
+    uint wordCount;
+    uint keyIndex;
+    uint nonce0;
+    uint nonce1;
+    uint nonce2;
+    uint counter0;
+    uint aadWordOffset;
+    uint aadByteSize;
+} job;
+
+uint rotl32(uint x, uint n)
+{
+    return (x << n) | (x >> (32u - n));
+}
+
+void quarterRound(inout uint a, inout uint b, inout uint c, inout uint d)
+{
+    a += b; d ^= a; d = rotl32(d, 16u);
+    c += d; b ^= c; b = rotl32(b, 12u);
+    a += b; d ^= a; d = rotl32(d, 8u);
+    c += d; b ^= c; b = rotl32(b, 7u);
+}
+
+void chacha20_block(
+    uint keyBase,
+    uint counter,
+    uint nonce0,
+    uint nonce1,
+    uint nonce2,
+    out uint outState[16])
+{
+    uint x[16];
+    uint orig[16];
+
+    x[0]  = 0x61707865u;
+    x[1]  = 0x3320646eu;
+    x[2]  = 0x79622d32u;
+    x[3]  = 0x6b206574u;
+
+    x[4]  = keyBuf.keys[keyBase + 0u];
+    x[5]  = keyBuf.keys[keyBase + 1u];
+    x[6]  = keyBuf.keys[keyBase + 2u];
+    x[7]  = keyBuf.keys[keyBase + 3u];
+    x[8]  = keyBuf.keys[keyBase + 4u];
+    x[9]  = keyBuf.keys[keyBase + 5u];
+    x[10] = keyBuf.keys[keyBase + 6u];
+    x[11] = keyBuf.keys[keyBase + 7u];
+
+    x[12] = counter;
+    x[13] = nonce0;
+    x[14] = nonce1;
+    x[15] = nonce2;
+
+    for (int i = 0; i < 16; ++i)
+        orig[i] = x[i];
+
+    for (int i = 0; i < 10; ++i)
+    {
+        quarterRound(x[0], x[4], x[8],  x[12]);
+        quarterRound(x[1], x[5], x[9],  x[13]);
+        quarterRound(x[2], x[6], x[10], x[14]);
+        quarterRound(x[3], x[7], x[11], x[15]);
+
+        quarterRound(x[0], x[5], x[10], x[15]);
+        quarterRound(x[1], x[6], x[11], x[12]);
+        quarterRound(x[2], x[7], x[8],  x[13]);
+        quarterRound(x[3], x[4], x[9],  x[14]);
+    }
+
+    for (int i = 0; i < 16; ++i)
+        outState[i] = x[i] + orig[i];
+}
+
+uint getByte(bool fromAad, uint byteOffset)
+{
+    uint baseWordOffset = fromAad ? job.aadWordOffset : job.outputWordOffset;
+    uint absoluteByte = baseWordOffset * 4u + byteOffset;
+    uint word = fromAad
+        ? aadBuf.aadWords[absoluteByte >> 2]
+        : cipherBuf.cipherWords[absoluteByte >> 2];
+
+    return (word >> ((absoluteByte & 3u) * 8u)) & 0xFFu;
+}
+
+uint loadLE32(bool fromAad, uint byteOffset, uint totalLen)
+{
+    uint v = 0u;
+    for (uint i = 0u; i < 4u; ++i)
+    {
+        uint idx = byteOffset + i;
+        uint b = (idx < totalLen) ? getByte(fromAad, idx) : 0u;
+        v |= (b << (8u * i));
+    }
+    return v;
+}
+
+void poly1305_step(
+    inout uint64_t h0,
+    inout uint64_t h1,
+    inout uint64_t h2,
+    inout uint64_t h3,
+    inout uint64_t h4,
+    uint64_t r0,
+    uint64_t r1,
+    uint64_t r2,
+    uint64_t r3,
+    uint64_t r4,
+    uint64_t m0,
+    uint64_t m1,
+    uint64_t m2,
+    uint64_t m3)
+{
+    const uint64_t MASK26 = uint64_t(0x3ffffffu);
+
+    h0 += (m0 & MASK26);
+    h1 += ((m0 >> 26) | (m1 << 6)) & MASK26;
+    h2 += ((m1 >> 20) | (m2 << 12)) & MASK26;
+    h3 += ((m2 >> 14) | (m3 << 18)) & MASK26;
+    h4 += (m3 >> 8) | (uint64_t(1u) << 24);
+
+    uint64_t d0 = h0 * r0 + h1 * (r4 * uint64_t(5u)) + h2 * (r3 * uint64_t(5u)) + h3 * (r2 * uint64_t(5u)) + h4 * (r1 * uint64_t(5u));
+    uint64_t d1 = h0 * r1 + h1 * r0 + h2 * (r4 * uint64_t(5u)) + h3 * (r3 * uint64_t(5u)) + h4 * (r2 * uint64_t(5u));
+    uint64_t d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * (r4 * uint64_t(5u)) + h4 * (r3 * uint64_t(5u));
+    uint64_t d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * (r4 * uint64_t(5u));
+    uint64_t d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
+
+    uint64_t c;
+    c = d0 >> 26; h0 = d0 & MASK26; d1 += c;
+    c = d1 >> 26; h1 = d1 & MASK26; d2 += c;
+    c = d2 >> 26; h2 = d2 & MASK26; d3 += c;
+    c = d3 >> 26; h3 = d3 & MASK26; d4 += c;
+    c = d4 >> 26; h4 = d4 & MASK26;
+
+    h0 += c * uint64_t(5u);
+    c = h0 >> 26;
+    h0 &= MASK26;
+    h1 += c;
+}
+
+void main()
+{
+    uint keyBase = job.keyIndex * 8u;
+
+    // Derive Poly1305 one-time key from ChaCha20 block counter = 0
+    uint ks[16];
+    chacha20_block(keyBase, 0u, job.nonce0, job.nonce1, job.nonce2, ks);
+
+    uint keyBytes[32];
+    for (uint i = 0u; i < 8u; ++i)
+    {
+        uint w = ks[i];
+        keyBytes[i * 4u + 0u] = (w >> 0u) & 0xFFu;
+        keyBytes[i * 4u + 1u] = (w >> 8u) & 0xFFu;
+        keyBytes[i * 4u + 2u] = (w >> 16u) & 0xFFu;
+        keyBytes[i * 4u + 3u] = (w >> 24u) & 0xFFu;
+    }
+
+    keyBytes[3]  &= 15u;
+    keyBytes[7]  &= 15u;
+    keyBytes[11] &= 15u;
+    keyBytes[15] &= 15u;
+    keyBytes[4]  &= 252u;
+    keyBytes[8]  &= 252u;
+    keyBytes[12] &= 252u;
+
+    uint w0 = keyBytes[0]  | (keyBytes[1]  << 8u) | (keyBytes[2]  << 16u) | (keyBytes[3]  << 24u);
+    uint w1 = keyBytes[4]  | (keyBytes[5]  << 8u) | (keyBytes[6]  << 16u) | (keyBytes[7]  << 24u);
+    uint w2 = keyBytes[8]  | (keyBytes[9]  << 8u) | (keyBytes[10] << 16u) | (keyBytes[11] << 24u);
+    uint w3 = keyBytes[12] | (keyBytes[13] << 8u) | (keyBytes[14] << 16u) | (keyBytes[15] << 24u);
+
+    uint64_t r0 = uint64_t(w0 & 0x3ffffffu);
+    uint64_t r1 = (uint64_t(w0 >> 26u) | (uint64_t(w1) << 6u)) & uint64_t(0x3ffffffu);
+    uint64_t r2 = (uint64_t(w1 >> 20u) | (uint64_t(w2) << 12u)) & uint64_t(0x3ffffffu);
+    uint64_t r3 = (uint64_t(w2 >> 14u) | (uint64_t(w3) << 18u)) & uint64_t(0x3ffffffu);
+    uint64_t r4 = uint64_t(w3 >> 8u);
+
+    uint64_t s0 =
+        uint64_t(keyBytes[16]) |
+        (uint64_t(keyBytes[17]) << 8u) |
+        (uint64_t(keyBytes[18]) << 16u) |
+        (uint64_t(keyBytes[19]) << 24u) |
+        (uint64_t(keyBytes[20]) << 32u) |
+        (uint64_t(keyBytes[21]) << 40u) |
+        (uint64_t(keyBytes[22]) << 48u) |
+        (uint64_t(keyBytes[23]) << 56u);
+
+    uint64_t s1 =
+        uint64_t(keyBytes[24]) |
+        (uint64_t(keyBytes[25]) << 8u) |
+        (uint64_t(keyBytes[26]) << 16u) |
+        (uint64_t(keyBytes[27]) << 24u) |
+        (uint64_t(keyBytes[28]) << 32u) |
+        (uint64_t(keyBytes[29]) << 40u) |
+        (uint64_t(keyBytes[30]) << 48u) |
+        (uint64_t(keyBytes[31]) << 56u);
+
+    uint64_t h0 = 0u;
+    uint64_t h1 = 0u;
+    uint64_t h2 = 0u;
+    uint64_t h3 = 0u;
+    uint64_t h4 = 0u;
+
+    // AAD || pad16(AAD)
+    for (uint off = 0u; off < job.aadByteSize; off += 16u)
+    {
+        uint m0 = loadLE32(true, off, job.aadByteSize);
+        uint m1 = loadLE32(true, off + 4u, job.aadByteSize);
+        uint m2 = loadLE32(true, off + 8u, job.aadByteSize);
+        uint m3 = loadLE32(true, off + 12u, job.aadByteSize);
+        poly1305_step(h0, h1, h2, h3, h4, r0, r1, r2, r3, r4,
+                      uint64_t(m0), uint64_t(m1), uint64_t(m2), uint64_t(m3));
+    }
+
+    // Ciphertext || pad16(ciphertext)
+    for (uint off = 0u; off < job.byteSize; off += 16u)
+    {
+        uint m0 = loadLE32(false, off, job.byteSize);
+        uint m1 = loadLE32(false, off + 4u, job.byteSize);
+        uint m2 = loadLE32(false, off + 8u, job.byteSize);
+        uint m3 = loadLE32(false, off + 12u, job.byteSize);
+        poly1305_step(h0, h1, h2, h3, h4, r0, r1, r2, r3, r4,
+                      uint64_t(m0), uint64_t(m1), uint64_t(m2), uint64_t(m3));
+    }
+
+    // Length block: 64-bit little-endian lengths
+    uint64_t aadLen = uint64_t(job.aadByteSize);
+    uint64_t ctLen = uint64_t(job.byteSize);
+    poly1305_step(h0, h1, h2, h3, h4, r0, r1, r2, r3, r4,
+                  aadLen & 0xffffffffu, aadLen >> 32u,
+                  ctLen & 0xffffffffu, ctLen >> 32u);
+
+    const uint64_t MASK26 = uint64_t(0x3ffffffu);
+    uint64_t c;
+    c = h1 >> 26u; h1 &= MASK26; h2 += c;
+    c = h2 >> 26u; h2 &= MASK26; h3 += c;
+    c = h3 >> 26u; h3 &= MASK26; h4 += c;
+    c = h4 >> 26u; h4 &= MASK26; h0 += c * uint64_t(5u);
+    c = h0 >> 26u; h0 &= MASK26; h1 += c;
+
+    uint64_t g0 = h0 + uint64_t(5u);
+    c = g0 >> 26u; g0 &= MASK26;
+    uint64_t g1 = h1 + c; c = g1 >> 26u; g1 &= MASK26;
+    uint64_t g2 = h2 + c; c = g2 >> 26u; g2 &= MASK26;
+    uint64_t g3 = h3 + c; c = g3 >> 26u; g3 &= MASK26;
+    uint64_t g4 = h4 + c - (uint64_t(1u) << 26u);
+
+    uint64_t useG = uint64_t(1u) ^ (g4 >> 63u);
+    uint64_t mask = uint64_t(0u) - useG;
+
+    h0 = (h0 & ~mask) | (g0 & mask);
+    h1 = (h1 & ~mask) | (g1 & mask);
+    h2 = (h2 & ~mask) | (g2 & mask);
+    h3 = (h3 & ~mask) | (g3 & mask);
+    h4 = (h4 & ~mask) | (g4 & mask);
+
+    // Convert 130-bit accumulator to low 128 bits, then add s
+    uint64_t lo = h0 | (h1 << 26u) | (h2 << 52u);
+    uint64_t hi = (h2 >> 12u) | (h3 << 14u) | (h4 << 40u);
+
+    uint64_t tagLo = lo + s0;
+    uint64_t carry = (tagLo < lo) ? 1u : 0u;
+    uint64_t tagHi = hi + s1 + carry;
+
+    tagBuf.tagWords[0] = uint(tagLo & 0xffffffffu);
+    tagBuf.tagWords[1] = uint(tagLo >> 32u);
+    tagBuf.tagWords[2] = uint(tagHi & 0xffffffffu);
+    tagBuf.tagWords[3] = uint(tagHi >> 32u);
+}
