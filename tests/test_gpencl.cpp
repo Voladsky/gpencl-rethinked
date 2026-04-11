@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,40 @@ int main() {
     assert(empty_file_decrypted == empty_plaintext);
     std::cerr << "Empty file test passed.\n";
 
+    std::cerr << "Running large file test...\n";
+    const size_t large_size = 10 * 1024 * 1024;  // 10MB
+    std::vector<uint8_t> large_plaintext(large_size);
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint8_t> dist(0, 255);
+    for (auto& byte : large_plaintext) {
+        byte = dist(gen);
+    }
+
+    const std::string large_input_path = "test_large.txt";
+    const std::string large_encrypted_path = "test_large.txt.enc";
+    const std::string large_decrypted_path = "test_large.txt.dec";
+
+    assert(save_file(large_input_path, large_plaintext));
+    assert(GpEncl::encrypt_file(password, large_input_path, large_encrypted_path));
+    assert(GpEncl::decrypt_file(password, large_encrypted_path, large_decrypted_path));
+
+    auto large_file_decrypted = load_file(large_decrypted_path);
+    assert(large_file_decrypted == large_plaintext);
+    std::cerr << "Large file test passed.\n";
+
+    std::cerr << "Running wrong password buffer test...\n";
+    auto wrong_decrypted_buffer = GpEncl::decrypt_buffer("wrong-password", encrypted);
+    assert(wrong_decrypted_buffer != plaintext);
+    std::cerr << "Wrong password buffer test passed.\n";
+
+    std::cerr << "Running wrong password file test...\n";
+    const std::string wrong_decrypted_path = "test_plaintext_wrong.dec";
+    GpEncl::decrypt_file("wrong-password", encrypted_path, wrong_decrypted_path);
+    auto wrong_file_decrypted = load_file(wrong_decrypted_path);
+    assert(wrong_file_decrypted != plaintext);
+    std::cerr << "Wrong password file test passed.\n";
+
     GpEncl::shutdown();
 
     std::remove(input_path.c_str());
@@ -85,6 +120,10 @@ int main() {
     std::remove(empty_input_path.c_str());
     std::remove(empty_encrypted_path.c_str());
     std::remove(empty_decrypted_path.c_str());
+    std::remove(large_input_path.c_str());
+    std::remove(large_encrypted_path.c_str());
+    std::remove(large_decrypted_path.c_str());
+    std::remove(wrong_decrypted_path.c_str());
 
     std::cout << "All gpencl tests passed." << std::endl;
     return 0;
