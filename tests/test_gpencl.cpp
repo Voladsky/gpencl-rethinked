@@ -1,8 +1,10 @@
 #include "libgpencl.h"
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
 #include <string>
@@ -23,7 +25,6 @@ static bool save_file(const std::string& path, const std::vector<uint8_t>& data)
     return out.good();
 }
 
-// Test functions
 static void test_basic_roundtrip(const std::string& password, const std::vector<uint8_t>& plaintext) {
     std::cerr << "Running buffer round-trip test...\n";
     auto encrypted = GpEncl::encrypt_buffer(password, plaintext);
@@ -449,6 +450,98 @@ static void test_file_format_validation(const std::string& password, const std::
     std::remove(format_decrypted.c_str());
 }
 
+static void test_performance_benchmarks() {
+    std::cerr << "Running GPENCL performance benchmarks..." << std::endl;
+    std::cerr << "This may take several minutes depending on your GPU.\n" << std::endl;
+
+    const std::string password = "benchmark-password-12345";
+    const std::vector<size_t> sizes = {1024, 1024*1024, 10*1024*1024, 50*1024*1024};
+    const std::vector<std::string> size_names = {"1KB", "1MB", "10MB", "50MB"};
+
+    std::cerr << "Benchmark Results:" << std::endl;
+    std::cerr << "=================" << std::endl;
+    std::cerr << std::left << std::setw(8) << "Size" 
+              << std::setw(12) << "Operation" 
+              << std::setw(12) << "Time(ms)" 
+              << std::setw(12) << "Throughput" << std::endl;
+    std::cerr << std::string(44, '-') << std::endl;
+
+    for (size_t i = 0; i < sizes.size(); ++i) {
+        size_t size = sizes[i];
+        std::string size_name = size_names[i];
+
+        std::vector<uint8_t> test_data(size);
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<uint8_t> dist(0, 255);
+        for (auto& byte : test_data) {
+            byte = dist(gen);
+        }
+
+        auto start = std::chrono::high_resolution_clock::now();
+        auto encrypted = GpEncl::encrypt_buffer(password, test_data);
+        auto end = std::chrono::high_resolution_clock::now();
+        auto encrypt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        double encrypt_throughput = (size / (1024.0 * 1024.0)) / (encrypt_time / 1000.0);
+
+        std::cerr << std::left << std::setw(8) << size_name 
+                  << std::setw(12) << "Encrypt" 
+                  << std::setw(12) << encrypt_time 
+                  << std::setw(12) << std::fixed << std::setprecision(2) << encrypt_throughput << " MB/s" << std::endl;
+
+        start = std::chrono::high_resolution_clock::now();
+        auto decrypted = GpEncl::decrypt_buffer(password, encrypted);
+        end = std::chrono::high_resolution_clock::now();
+        auto decrypt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        double decrypt_throughput = (size / (1024.0 * 1024.0)) / (decrypt_time / 1000.0);
+
+        std::cerr << std::left << std::setw(8) << size_name 
+                  << std::setw(12) << "Decrypt" 
+                  << std::setw(12) << decrypt_time 
+                  << std::setw(12) << std::fixed << std::setprecision(2) << decrypt_throughput << " MB/s" << std::endl;
+
+        if (size >= 1024*1024) {
+            std::string input_file = "benchmark_" + size_name + ".tmp";
+            std::string encrypted_file = input_file + ".enc";
+            std::string decrypted_file = input_file + ".dec";
+
+            std::ofstream out(input_file, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(test_data.data()), test_data.size());
+            out.close();
+
+            start = std::chrono::high_resolution_clock::now();
+            bool encrypt_success = GpEncl::encrypt_file(password, input_file, encrypted_file);
+            end = std::chrono::high_resolution_clock::now();
+            auto file_encrypt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            double file_encrypt_throughput = encrypt_success ? (size / (1024.0 * 1024.0)) / (file_encrypt_time / 1000.0) : 0.0;
+
+            std::cerr << std::left << std::setw(8) << size_name 
+                      << std::setw(12) << "File Enc" 
+                      << std::setw(12) << file_encrypt_time 
+                      << std::setw(12) << std::fixed << std::setprecision(2) << file_encrypt_throughput << " MB/s" << std::endl;
+
+            start = std::chrono::high_resolution_clock::now();
+            bool decrypt_success = GpEncl::decrypt_file(password, encrypted_file, decrypted_file);
+            end = std::chrono::high_resolution_clock::now();
+            auto file_decrypt_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            double file_decrypt_throughput = decrypt_success ? (size / (1024.0 * 1024.0)) / (file_decrypt_time / 1000.0) : 0.0;
+
+            std::cerr << std::left << std::setw(8) << size_name 
+                      << std::setw(12) << "File Dec" 
+                      << std::setw(12) << file_decrypt_time 
+                      << std::setw(12) << std::fixed << std::setprecision(2) << file_decrypt_throughput << " MB/s" << std::endl;
+
+            std::remove(input_file.c_str());
+            std::remove(encrypted_file.c_str());
+            std::remove(decrypted_file.c_str());
+        }
+
+        std::cerr << std::endl;
+    }
+
+    std::cerr << "Benchmark completed." << std::endl;
+}
+
 int main() {
     const std::string password = "test-password";
     const std::vector<uint8_t> plaintext = {
@@ -486,6 +579,9 @@ int main() {
 
     std::cerr << "=== File Format Validation Tests ===\n";
     test_file_format_validation(password, plaintext);
+
+    std::cerr << "=== Performance Benchmarks ===\n";
+    test_performance_benchmarks();
 
     GpEncl::shutdown();
 
