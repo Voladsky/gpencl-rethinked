@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(gpencl)
 
+enable_testing()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -130,3 +132,22 @@ endif()
 
 # Rename executable to gpencl
 set_target_properties(gpencl_exe PROPERTIES OUTPUT_NAME gpencl)
+
+# -----------------------------------------------------------------------------
+# Add tests
+add_executable(test_gpencl tests/test_gpencl.cpp)
+
+target_include_directories(test_gpencl PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(test_gpencl gpencl)
+
+if(WIN32)
+    target_compile_options(test_gpencl PRIVATE /Zi)
+else()
+    target_compile_options(test_gpencl PRIVATE -g)
+endif()
+
+add_test(NAME gpencl_roundtrip COMMAND test_gpencl)
+set_tests_properties(gpencl_roundtrip PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
