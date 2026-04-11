@@ -56,11 +56,35 @@ int main() {
 
     std::cerr << "File round-trip passed.\n";
 
+    std::cerr << "Running empty buffer test...\n";
+    const std::vector<uint8_t> empty_plaintext = {};
+    auto empty_encrypted = GpEncl::encrypt_buffer(password, empty_plaintext);
+
+    auto empty_decrypted = GpEncl::decrypt_buffer(password, empty_encrypted);
+    assert(empty_decrypted == empty_plaintext);
+    std::cerr << "Empty buffer test passed.\n";
+
+    std::cerr << "Running empty file test...\n";
+    const std::string empty_input_path = "test_empty.txt";
+    const std::string empty_encrypted_path = "test_empty.txt.enc";
+    const std::string empty_decrypted_path = "test_empty.txt.dec";
+
+    assert(save_file(empty_input_path, empty_plaintext));
+    assert(GpEncl::encrypt_file(password, empty_input_path, empty_encrypted_path));
+    GpEncl::decrypt_file(password, empty_encrypted_path, empty_decrypted_path);
+
+    auto empty_file_decrypted = load_file(empty_decrypted_path);
+    assert(empty_file_decrypted == empty_plaintext);
+    std::cerr << "Empty file test passed.\n";
+
     GpEncl::shutdown();
 
     std::remove(input_path.c_str());
     std::remove(encrypted_path.c_str());
     std::remove(decrypted_path.c_str());
+    std::remove(empty_input_path.c_str());
+    std::remove(empty_encrypted_path.c_str());
+    std::remove(empty_decrypted_path.c_str());
 
     std::cout << "All gpencl tests passed." << std::endl;
     return 0;
