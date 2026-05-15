@@ -272,7 +272,12 @@ bool init() {
             std::vector<VkPhysicalDevice> devices(devCount);
             throwVk(vkEnumeratePhysicalDevices(g_instance, &devCount, devices.data()), "vkEnumeratePhysicalDevices failed");
 
+            // Prefer NVIDIA device when available
+            const uint32_t NVIDIA_VENDOR_ID = 0x10DE;
             for (auto dev : devices) {
+                VkPhysicalDeviceProperties props{};
+                vkGetPhysicalDeviceProperties(dev, &props);
+
                 uint32_t qCount = 0;
                 vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
                 std::vector<VkQueueFamilyProperties> qprops(qCount);
@@ -280,14 +285,37 @@ bool init() {
 
                 for (uint32_t i = 0; i < qCount; ++i) {
                     if (qprops[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                        g_physicalDevice = dev;
-                        g_computeQueueFamily = i;
-                        break;
+                        if (props.vendorID == NVIDIA_VENDOR_ID || std::string(props.deviceName).find("NVIDIA") != std::string::npos) {
+                            g_physicalDevice = dev;
+                            g_computeQueueFamily = i;
+                            break;
+                        }
                     }
                 }
 
                 if (g_physicalDevice != VK_NULL_HANDLE)
                     break;
+            }
+
+            // If no NVIDIA found, pick the first device with a compute queue
+            if (g_physicalDevice == VK_NULL_HANDLE) {
+                for (auto dev : devices) {
+                    uint32_t qCount = 0;
+                    vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
+                    std::vector<VkQueueFamilyProperties> qprops(qCount);
+                    vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, qprops.data());
+
+                    for (uint32_t i = 0; i < qCount; ++i) {
+                        if (qprops[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                            g_physicalDevice = dev;
+                            g_computeQueueFamily = i;
+                            break;
+                        }
+                    }
+
+                    if (g_physicalDevice != VK_NULL_HANDLE)
+                        break;
+                }
             }
 
             if (g_physicalDevice == VK_NULL_HANDLE)
@@ -391,18 +419,23 @@ bool init() {
         {
             VkDescriptorPoolSize poolSize{};
             poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            poolSize.descriptorCount = 12;
+            // We have 6 bindings per descriptor set. Provide room for multiple sets and allow
+            // individual descriptor set freeing to avoid fragmentation errors.
+            const uint32_t maxSets = 32; // allow multiple concurrent/serial allocations
+            poolSize.descriptorCount = 6 * maxSets;
 
             VkDescriptorPoolCreateInfo poolInfo{};
             poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-            poolInfo.maxSets = 2;
+            poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT; // allow vkFreeDescriptorSets
+            poolInfo.maxSets = maxSets;
             poolInfo.poolSizeCount = 1;
             poolInfo.pPoolSizes = &poolSize;
+
             throwVk(vkCreateDescriptorPool(g_device, &poolInfo, nullptr, &g_descPool),
                     "vkCreateDescriptorPool failed");
         }
-        return true;
-    } catch (const std::exception& e) {
+         return true;
+     } catch (const std::exception& e) {
         std::cerr << "Init failed: " << e.what() << std::endl;
         return false;
     }

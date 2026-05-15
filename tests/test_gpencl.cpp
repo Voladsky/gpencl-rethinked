@@ -88,9 +88,9 @@ static void test_large_file(const std::string& password) {
     std::vector<uint8_t> large_plaintext(large_size);
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint8_t> dist(0, 255);
+    std::uniform_int_distribution<int> dist(0, 255);
     for (auto& byte : large_plaintext) {
-        byte = dist(gen);
+        byte = static_cast<uint8_t>(dist(gen));
     }
 
     const std::string large_input_path = "test_large.txt";
@@ -321,9 +321,9 @@ static void test_binary_data(const std::string& password) {
     std::vector<uint8_t> binary_plaintext;
     std::random_device rd2;
     std::mt19937 gen2(rd2());
-    std::uniform_int_distribution<uint8_t> bin_dist(0, 255);
+    std::uniform_int_distribution<int> bin_dist(0, 255);
     for (int i = 0; i < 1024; ++i) {
-        binary_plaintext.push_back(bin_dist(gen2));
+        binary_plaintext.push_back(static_cast<uint8_t>(bin_dist(gen2)));
     }
     
     auto binary_encrypted = GpEncl::encrypt_buffer(password, binary_plaintext);
@@ -473,9 +473,9 @@ static void test_performance_benchmarks() {
         std::vector<uint8_t> test_data(size);
         std::random_device rd;
         std::mt19937 gen(rd());
-        std::uniform_int_distribution<uint8_t> dist(0, 255);
+        std::uniform_int_distribution<int> dist(0, 255);
         for (auto& byte : test_data) {
-            byte = dist(gen);
+            byte = static_cast<uint8_t>(dist(gen));
         }
 
         auto start = std::chrono::high_resolution_clock::now();
