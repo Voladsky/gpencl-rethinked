@@ -9,6 +9,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 static std::vector<uint8_t> load_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -455,8 +456,17 @@ static void test_performance_benchmarks() {
     std::cerr << "This may take several minutes depending on your GPU.\n" << std::endl;
 
     const std::string password = "benchmark-password-12345";
-    const std::vector<size_t> sizes = {1024, 1024*1024, 10*1024*1024, 50*1024*1024};
-    const std::vector<std::string> size_names = {"1KB", "1MB", "10MB", "50MB"};
+    std::vector<size_t> sizes = {1024, 1024*1024, 10*1024*1024, 50*1024*1024};
+    std::vector<std::string> size_names = {"1KB", "1MB", "10MB", "50MB"};
+
+    const char* bench_env = std::getenv("GPENCL_BENCH_LARGE");
+    if (bench_env && std::string(bench_env) != "") {
+        std::vector<size_t> extra_sizes = {100ULL*1024*1024, 200ULL*1024*1024, 500ULL*1024*1024};
+        std::vector<std::string> extra_names = {"100MB", "200MB", "500MB"};
+        sizes.insert(sizes.end(), extra_sizes.begin(), extra_sizes.end());
+        size_names.insert(size_names.end(), extra_names.begin(), extra_names.end());
+        std::cerr << "Large benchmarks enabled via GPENCL_BENCH_LARGE" << std::endl;
+    }
 
     std::cerr << "Benchmark Results:" << std::endl;
     std::cerr << "=================" << std::endl;
